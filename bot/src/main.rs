@@ -14,7 +14,8 @@ use clap::Parser;
 use once_cell::sync::OnceCell;
 use teloxide::{
     adaptors::DefaultParseMode,
-    dispatching::update_listeners,
+    update_listeners,
+    update_listeners::webhooks,
     error_handlers::IgnoringErrorHandler,
     prelude::*,
     types::{AllowedUpdate, ChatPermissions, ParseMode, UpdateKind},
@@ -34,6 +35,8 @@ mod version;
 #[derive(Debug, serde::Deserialize)]
 pub struct BaseConfig {
     pub bot_token: String,
+    pub bot_webhook_url: Option<String>,
+    pub bot_webhook_addr: Option<String>,
     pub telegraph: TelegraphConfig,
     #[serde(default)]
     pub admins: Vec<i64>,
@@ -216,16 +219,35 @@ async fn main() {
     .error_handler(std::sync::Arc::new(IgnoringErrorHandler))
     .enable_ctrlc_handler()
     .build();
-    let bot_listener = update_listeners::Polling::builder(bot)
-        .allowed_updates(vec![AllowedUpdate::Message])
-        .timeout(std::time::Duration::from_secs(10))
-        .build();
 
-    tracing::info!("initializing finished, bot is running");
-    bot_dispatcher
-        .dispatch_with_listener(
-            bot_listener,
-            LoggingErrorHandler::with_custom_text("An error from the update listener"),
-        )
-        .await;
+    if let (Some(url_string), Some(addr_string)) = (base_config.bot_webhook_url, base_config.bot_webhook_addr) {
+        let url = url_string.as_str().parse().expect("Env variable `TELEGRAM_BOT_WEBHOOK_URL` is incorrect.");
+        let addr = addr_string.as_str().parse().expect("Env variable `TELEGRAM_BOT_WEBHOOK_LISTEN` is incorrect.");
+        let bot_listener = webhooks::axum(bot.clone(), webhooks::Options::new(addr, url))
+            .await
+            .expect("Couldn't setup webhook");
+
+        tracing::info!("initializing finished, bot is running via webhook");
+        bot_dispatcher
+            .dispatch_with_listener(
+                bot_listener,
+                LoggingErrorHandler::with_custom_text("An error from the update listener"),
+            )
+            .await;
+
+    } else {
+        let bot_listener = update_listeners::Polling::builder(bot)
+            .allowed_updates(vec![AllowedUpdate::Message])
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+
+        tracing::info!("initializing finished, bot is running");
+        bot_dispatcher
+            .dispatch_with_listener(
+                bot_listener,
+                LoggingErrorHandler::with_custom_text("An error from the update listener"),
+            )
+            .await;
+
+    }
 }
